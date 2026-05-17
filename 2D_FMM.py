@@ -83,15 +83,15 @@ def P2M(node, pa):
     """
     Particle-to-Multipole (P2M):
     將葉節點內的粒子貢獻轉化為該節點的多極展開係數。
-    公式: a_0 = sum(m_i), a_k = sum(m_i * (z_i - z_c)^k)
+    公式: a_0 = sum(m_i), a_k = sum(m_i * (z_i - z_c)^k / k)
     """
     if len(node.particle_idx) == 0: return
     idx = np.asarray(node.particle_idx)
     dz = pa.pos[idx] - node.center
     m = pa.mass[idx]
-    node.multipole_coeffs[0] = m.sum()
+    node.multipole_coeffs[0]  = m.sum()
     for k in range(1, MAX_P):
-        node.multipole_coeffs[k] = np.sum(m * (dz**k))
+        node.multipole_coeffs[k]+= -np.sum(m * (dz**k)) / k
 
 def M2M(parent, child):
     """
@@ -99,11 +99,15 @@ def M2M(parent, child):
     將子節點的多極展開係數平移並累加到父節點。
     這是向上遍歷 (Upward Pass) 的核心。
     """
-    d = child.center - parent.center
-    for k in range(MAX_P):
-        js = np.arange(k + 1)
-        # 利用二項式展開進行平移
-        parent.multipole_coeffs[k] += np.sum(child.multipole_coeffs[js] * (d**(k-js)) * BINOM[k, js])
+    # 原本是在z0展開 現在移到 z = 0 展開 (=> z0 = child.center - parent.center)
+    a0 = child.multipole_coeffs[0]
+
+    d = child.center - parent.center                 # z0
+    parent.multipole_coeffs[0] += a0                 # b0 = a0
+    for l in range(1, MAX_P):
+        parent.multipole_coeffs[l] += -a0 * d**l / l
+        for k in range(1, l+1):
+            parent.multipole_coeffs[l] += child.multipole_coeffs[k] * (d**(l-k)) * BINOM[l-1, k-1]
 
 def M2L(target, source):
     """
@@ -111,22 +115,27 @@ def M2L(target, source):
     將遠方源節點的多極展開轉換為目標節點的局部展開。
     這是 FMM 最關鍵的一步，將「遠方群體」的影響轉化為「本地場」的近似。
     """
-    d = target.center - source.center
+    # 把在在圓心z0附近的的東西在z = 0 展開 => d = z0 - z 
+    d = source.center - target.center
     inv_d = 1.0 / d
     a = source.multipole_coeffs
     
     # 處理 0 階項 (對數項)
-    target.local_coeffs[0] += a[0] * cmath.log(d)
-    js = np.arange(1, MAX_P)
-    target.local_coeffs[0] += np.sum(a[js] * ((-1.0)**js / js) * (inv_d**js))
+    target.local_coeffs[0] += a[0] * cmath.log(-d)
+    
+    for k in range(1, MAX_P):
+        target.local_coeffs[0] += a[k] * (-1)**(k) / d**k
     
     # 處理高階項
-    for k in range(1, MAX_P):
-        term1 = a[0] * ((-1.0)**k / k) * (inv_d**k)
-        js = np.arange(1, MAX_P)
-        comb = np.array([BINOM[k+j-1, j-1] for j in js])
-        term2 = np.sum(a[js] * ((-1.0)**js * comb) * (inv_d**(k+js)))
-        target.local_coeffs[k] += term1 + term2
+    for l in range(1, MAX_P):
+        target.local_coeffs[l] += -a[0] / (l * d**l)
+        for k in range(1, MAX_P):
+            target.local_coeffs[l] += a[k] * (-1)**(k) * BINOM[l+k-1, k-1] / d**(l+k)
+        # term1 = a[0] * ((-1.0)**l / l) * (inv_d**l)
+        # js = np.arange(1, MAX_P)
+        # comb = np.array([BINOM[l+j-1, j-1] for j in js])
+        # term2 = np.sum(a[js] /js * ((-1.0)**js * comb) * (inv_d**(l+js)))
+        # target.local_coeffs[l] += term1 + term2
 
 def L2L(parent, child):
     """
@@ -134,6 +143,7 @@ def L2L(parent, child):
     將父節點的局部展開係數平移並傳遞給子節點。
     這是向下遍歷 (Downward Pass) 的核心。
     """
+    # 注意到現在的z0 = parent.center , 我們要在z = 0 展開(d = parent.center - child.center)
     d = child.center - parent.center
     for k in range(MAX_P):
         js = np.arange(k, MAX_P)
@@ -220,7 +230,7 @@ class FMM_Solver_v3:
     def _insert(self, node, idx):
         """遞迴插入粒子。"""
         if node.is_leaf:
-            if len(node.particle_idx) < self.max_per_node or node.level >= self.max_level:
+            if(node.level >= self.max_level):
                 node.particle_idx.append(idx)
             else:
                 node.subdivide(self.pa)
@@ -228,6 +238,7 @@ class FMM_Solver_v3:
         else:
             p = self.pa.pos[idx]
             ci = (1 if p.real >= node.center.real else 0) + (2 if p.imag < node.center.imag else 0)
+            # 0:左上 1:右上 2:左下 3: 右下
             self._insert(node.children[ci], idx)
 
     def _finalize(self, node):
@@ -242,12 +253,14 @@ class FMM_Solver_v3:
                abs(n1.center.imag - n2.center.imag) <= (n1.size + n2.size) * 0.51
 
     def _build_lists(self, node):
+        # list 裡存node 
         """
         建立鄰居列表與交互列表。
         鄰居: 與自身相鄰的同層節點。
         交互列表: 父節點鄰居的子節點中，與自身不相鄰的節點。
         """
         if node.parent is None:
+            # level 0 
             node.neighbors = [node]
         else:
             # 尋找鄰居
@@ -259,7 +272,7 @@ class FMM_Solver_v3:
                         if self._is_neighbor(node, c): node.neighbors.append(c)
             # 建立交互列表 (M2L 的對象)
             for pn in node.parent.neighbors:
-                if not pn.is_leaf:
+                if(not pn.is_leaf):
                     for c in pn.children:
                         if not self._is_neighbor(node, c): node.interaction_list.append(c)
         if not node.is_leaf:
