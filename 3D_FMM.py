@@ -90,15 +90,63 @@ class OctreeNode:
             self.children[ci].particle_idx.append(idx)
         self.particle_idx = []
 
-# --- FMM 核心算子 (Operators) ---
+# 一些operators 會用到的function 
 
 def build_const_Array():
     # 建一些P2M, M2M要用的表 
-
     for l in range(MAX_P + 1):
         for m in range(l + 1):
             Nlm[l, m] = np.sqrt(math.factorial(l - m) / math.factorial(l + m))
             Anm[l, m] = (-1)**n / np.sqrt(math.factorial(n - m) * math.factorial(n + m))
+
+def get_LegendreP(size, sintheta, costheta):
+    
+    sintheta = np.atleast_1d(sintheta)
+    costheta = np.atleast_1d(costheta)
+    # 算P_mn(phi')
+    # (1) P_(m-1)(m-1)       => P_mm     = -(2m - 1) * sin(theta') * P_(m-1)(m-1)(cos(theta'))
+    # (2) P_mm               => P_m(m+1) =  (2m + 1) * cos(theta') * P_mm(cos(theta'))
+    # (3) P_m(l-1), P_m(l-2) => P_ml     =  (2l - 1)/(l - m) * cos(theta') * P_m(l-1)(cos(theta'))
+    #                                    -  (l + m - 1)/(l - m) * P_m_(l-2)(cos(theta'))
+    # 從P_00 = 1 開始
+
+    Plm = np.zeros((MAX_P + 1 , MAX_P + 1, size))  # 只有一個particle, 所以P = P[MAX_P][MAX_P]
+    Plm[0, 0, :] = 1.0
+
+    for m in range(0, MAX_P):
+        # (1)
+        Plm[m + 1, m + 1, :] = -(2*m + 1) * sintheta * Plm[m, m, :]
+        # (2)
+        Plm[m + 1, m, :]     =  (2*m + 1) * costheta * Plm[m, m, :]
+    
+    for l in range(2, MAX_P + 1):
+        # (3)
+        for m in range(l - 1):
+            Plm[l, m, :] = (2*l - 1) / (l - m) * costheta * Plm[l-1, m, :] \
+                        - (l + m - 1) / (l - m) * Plm[l-2, m, :] 
+    if(size == 1):
+        return(Plm[:, :, 0])
+
+    return(Plm)
+
+def get_inf(pos1, pos2):
+    pos1, pos2 = np.asarray(pos1).reshape(3, -1), np.asarray(pos2).reshape(3, -1)
+
+    ds  = pos1 - pos2                               # displacement (這是一個array, 大小取決於idx = ?)
+    dxy = np.sqrt(np.sum(ds[:2]**2, axis = 0))      # distance on xy plane s' 
+    dxy = np.where(dxy < 1e-15, 1e-15, dxy)         # prevent it explodes
+    rs  = np.sqrt(np.sum(ds**2, axis = 0))          # r'
+    rs  = np.where(rs < 1e-15, 1e-15, rs)           # prevent it exlpodes
+
+    costheta = ds[2] / rs 
+    sintheta = np.sqrt(1 - costheta**2)
+    exp_iphi = (ds[0] + 1j * ds[1]) / dxy           # exp(iphi) = cos(phi) + i * sin(phi)
+
+    return ds, rs, dxy, costheta, sintheta, exp_iphi
+
+
+
+# --- FMM 核心算子 (Operators) ---
 
 def P2M(node, pa):
     # Particle to Multipole 將葉節點內的粒子貢獻轉化為該節點的多極展開係數
@@ -111,19 +159,11 @@ def P2M(node, pa):
 
     # 算 (r',theta',phi')
     N = len(node.particle_idx)
-
     if N == 0: return
+
     idx = np.asarray(node.particle_idx)
-    ds  = pa.pos[:, idx] - node.center.reshape(3, 1) # displacement 
-    dxy = np.sqrt(np.sum(ds[:2, :]**2, axis = 0))    # distance on xy plane s' 
-    rs  = np.sqrt(np.sum(ds**2, axis = 0))           # r'
-    dxy = np.where(dxy < 1e-15, 1e-15, dxy)
-    rs  = np.where(rs < 1e-15, 1e-15, rs)
     mas = pa.mass[idx]
-    
-    costheta = ds[2] / rs 
-    sintheta = np.sqrt(1 - costheta**2)
-    exp_iphi = (ds[0, :] + 1j * ds[1, :]) / dxy     # exp(iphi) = cos(phi) + i * sin(phi)
+    ds, rs, dxy, costheta, sintheta, exp_iphi = get_inf(pa.pos[:, idx], node.center.reshape(3, 1))
     
     # 算P_mn(phi')
     # (1) P_(m-1)(m-1)       => P_mm     = -(2m - 1) * sin(theta') * P_(m-1)(m-1)(cos(theta'))
@@ -132,22 +172,23 @@ def P2M(node, pa):
     #                                    -  (l + m - 1)/(l - m) * P_m_(l-2)(cos(theta'))
     # 從P_00 = 1 開始
 
-    Plm = np.zeros((MAX_P + 1 , MAX_P + 1, N)) # 每個particle 有自己的coeff 所以P = P[MAX_P][MAX_P][N]
-    Plm[0, 0, :] = 1.0
+    # Plm = np.zeros((MAX_P + 1 , MAX_P + 1, N)) # 每個particle 有自己的coeff 所以P = P[MAX_P][MAX_P][N]
+    # Plm[0, 0, :] = 1.0
 
-    # (1):
-    for m in range(0, MAX_P):
-        # (1)
-        Plm[m + 1, m + 1, :] = -(2*m + 1) * sintheta * Plm[m, m, :]
+    # # (1):
+    # for m in range(0, MAX_P):
+    #     # (1)
+    #     Plm[m + 1, m + 1, :] = -(2*m + 1) * sintheta * Plm[m, m, :]
 
-        # (2)
-        Plm[m + 1, m, :] =  (2*m + 1) * costheta * Plm[m, m, :]
+    #     # (2)
+    #     Plm[m + 1, m, :] =  (2*m + 1) * costheta * Plm[m, m, :]
     
-    for l in range(2, MAX_P + 1):
-        # (3)
-        for m in range(l - 1):
-            Plm[l, m, :] = (2*l - 1) / (l - m) * costheta * Plm[l-1, m, :] \
-                         - (l + m - 1) / (l - m) * Plm[l-2, m, :] 
+    # for l in range(2, MAX_P + 1):
+    #     # (3)
+    #     for m in range(l - 1):
+    #         Plm[l, m, :] = (2*l - 1) / (l - m) * costheta * Plm[l-1, m, :] \
+    #                      - (l + m - 1) / (l - m) * Plm[l-2, m, :] 
+    Plm = get_LegendreP(N, sintheta, costheta)
     
     # 算Ylm(theta',phi')
     Ylm = np.zeros((MAX_P + 1, MAX_P + 1, N), dtype = complex)
