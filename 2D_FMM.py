@@ -3,6 +3,7 @@ import cmath
 import math
 import time
 
+
 # --- 核心參數設定 ---
 FMM_ORDER = 12              # 多極展開的階數 (p)，階數越高精度越高，但計算量也越大
 GRAVITATIONAL_CONSTANT = 1.0 # 重力常數 G
@@ -311,7 +312,8 @@ class FMM_Solver_v3:
 # --- 測試與驗證 ---
 
 if __name__ == "__main__":
-    N, L = 500, 10.0
+    start_time = time.time()
+    N, L = 500000, 10.0
     np.random.seed(42)
     # 隨機生成粒子位置與質量
     xs, ys, ms = np.random.uniform(-L/2, L/2, N), np.random.uniform(-L/2, L/2, N), np.random.uniform(0.5, 1.5, N)
@@ -321,8 +323,9 @@ if __name__ == "__main__":
     solver = FMM_Solver_v3(pa_fmm, L)
     solver.build_tree()
     solver.run()
-    
+    print(time.time() - start_time)
     # --- 直接計算法 (Ground Truth) ---
+    start_time = time.time()
     pa_dir = ParticleArray(xs, ys, ms)
     for i in range(N):
         dz = pa_dir.pos[i] - pa_dir.pos
@@ -332,6 +335,7 @@ if __name__ == "__main__":
         log_r[i], inv_r2[i] = 0.0, 0.0
         pa_dir.potential[i] -= GRAVITATIONAL_CONSTANT * np.dot(pa_dir.mass, log_r)
         pa_dir.force[i] -= GRAVITATIONAL_CONSTANT * np.dot(pa_dir.mass, dz * inv_r2)
+    print(time.time() - start_time)
     
     # --- 誤差統計 ---
     pe = np.abs(pa_fmm.potential - pa_dir.potential) / np.abs(pa_dir.potential)
