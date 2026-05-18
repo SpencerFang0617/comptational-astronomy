@@ -177,37 +177,41 @@ def P2P_batch(idx1, idx2, pa, symmetric=True):
     直接計算近場粒子間的交互作用。
     對於不滿足遠場近似條件的粒子，必須使用直接計算法以保證精度。
     """
+
     if len(idx1) == 0 or len(idx2) == 0: return
-    p1, p2 = pa.pos[idx1], pa.pos[idx2]
-    m1, m2 = pa.mass[idx1], pa.mass[idx2]
+    p1, p2 = pa.pos[:,  idx1], pa.pos[;,  idx2] 
+    m1, m2 = pa.mass[:, idx1], pa.mass[;, idx2]
     
     if symmetric and id(idx1) == id(idx2):
         # 同一節點內的粒子兩兩交互 (利用對稱性減少一半計算量)
         for i in range(len(idx1)):
-            dz = p1[i] - p1[i+1:]
-            r2 = np.abs(dz)**2
+            dz = p1[:, i].reshape(3, 1) - p1[:, i+1:]
+            r2 = np.sum(dz * dz, axis = 0)
             r2 = np.where(r2 < 1e-15, 1e-15, r2) # 避免除以零
-            log_r = 0.5 * np.log(r2)
-            inv_r2 = 1.0 / r2
+            inv_r  = 1.0 / np.sqrt(r2)
+            inv_r3 = 1.0 / (inv_r)**3
+
             # 更新粒子 i
-            pa.potential[idx1[i]] -= GRAVITATIONAL_CONSTANT * np.sum(m1[i+1:] * log_r)
-            pa.force[idx1[i]] -= GRAVITATIONAL_CONSTANT * np.sum(m1[i+1:] * dz * inv_r2)
+            pa.potential[idx1[i]] -= GRAVITATIONAL_CONSTANT * np.sum(m1[i+1:] * inv_r, axis = 0)
+            pa.force[idx1[i]]     -= GRAVITATIONAL_CONSTANT * np.sum(m1[i+1:] * dz * inv_r3, axis = 1)
             # 更新其餘粒子 (反作用力)
-            pa.potential[idx1[i+1:]] -= GRAVITATIONAL_CONSTANT * m1[i] * log_r
-            pa.force[idx1[i+1:]] += GRAVITATIONAL_CONSTANT * m1[i] * dz * inv_r2
+            pa.potential[idx1[i+1:]] -= GRAVITATIONAL_CONSTANT * m1[i] * inv_r
+            pa.force[idx1[i+1:]]     += GRAVITATIONAL_CONSTANT * m1[i] * dz * inv_r3
     else:
         # 不同節點間的粒子交互
         for i in range(len(idx1)):
-            dz = p1[i] - p2
-            r2 = np.abs(dz)**2
+            dz = p1[:, i].reshape(3, 1) - p2  
+            r2 = np.sum(dz**2, axis = 0)        
             r2 = np.where(r2 < 1e-15, 1e-15, r2)
-            log_r = 0.5 * np.log(r2)
-            inv_r2 = 1.0 / r2
-            pa.potential[idx1[i]] -= GRAVITATIONAL_CONSTANT * np.sum(m2 * log_r)
-            pa.force[idx1[i]] -= GRAVITATIONAL_CONSTANT * np.sum(m2 * dz * inv_r2)
+            inv_r  = 1.0 / np.sqrt(r2)
+            inv_r3 = (inv_r)**3
+
+            pa.potential[idx1[i]] -= GRAVITATIONAL_CONSTANT * np.sum(m2 * inv_r)
+            pa.force[:, idx1[i]]  -= GRAVITATIONAL_CONSTANT * np.sum(m2 * dz * inv_r3, axis=1)
+
             if symmetric:
-                pa.potential[idx2] -= GRAVITATIONAL_CONSTANT * m1[i] * log_r
-                pa.force[idx2] += GRAVITATIONAL_CONSTANT * m1[i] * dz * inv_r2
+                pa.potential[idx2] -= GRAVITATIONAL_CONSTANT * m1[i] * inv_r
+                pa.force[:, idx2]  += GRAVITATIONAL_CONSTANT * m1[i] * dz * inv_r3
 
 # --- FMM 求解器主類別 ---
 
