@@ -258,10 +258,6 @@ def M2L(target, source):
 
             for n in range(MAX_P + 1):
                 for m in range(-n, n + 1):
-                    # j - n  > 0 
-                    # 但是 k - m 有些 < 0 
-                    # 我們上面的P2M 有定義 Olm(# -l, -l+1, ..., -1, 0, 1, 2 .... l)
-
                     # Y +m -m 定義不同
                     if(m - k < 0): flag = np.conj(Ylm[j + n, -m + k]) # m > 0 => -m < 0 Yn(-m) = *Ynm
                     else: flag = Ylm[j + n, m - k]
@@ -278,11 +274,29 @@ def L2L(parent, child):
     將父節點的局部展開係數平移並傳遞給子節點。
     這是向下遍歷 (Downward Pass) 的核心。
     """
-    # 注意到現在的z0 = parent.center , 我們要在z = 0 展開(d = parent.center - child.cente r)
-    d = child.center - parent.center
-    for k in range(MAX_P):
-        js = np.arange(k, MAX_P)
-        child.local_coeffs[k] += np.sum(parent.local_coeffs[js] * (d**(js-k)) * BINOM[js, k])
+    # pos1, pos2 (ds = pos2 -> pos1(pos1 - pos2))
+    ds, rs, dxy, costheta, sintheta, exp_iphi = get_inf(child.center, parent.center)
+    
+    Plm = get_LegendreP(sintheta, costheta, MAX_P + 1)
+    Ylm = get_SphHarmoY(Plm, exp_iphi, MAX_P + 1)
+
+    Onm = parent.local_coeffs
+    Ljk = np.zeros((MAX_P + 1, 2 * MAX_P + 1), dtype = complex)
+
+    for j in range(MAX_P + 1):
+        for k in range(-j, j + 1):
+            add_num = 0.0 + 0.0j
+            for n in range(j, MAX_P + 1):
+                rs_now = rs**(n - j)
+                for m in range(-n, n + 1):
+                    if(m - k > 0) : flag = Ylm[n - j, m - k]
+                    else: flag = np.conj(Ylm[n - j, k - m])
+
+                    add_num += Onm[n, MAX_P + m] * (1.0j)**(abs(m) - abs(m - k) - abs(k)) \
+                                * Anm[n - j, abs(m - k)] * Anm[j, abs(k)] * flag * rs_now \
+                                / ((-1)**(n + j) * Anm[n, abs(m)]) 
+            Ljk[j, MAX_P + k] += add_num
+    child.local_coeffs += Ljk
 
 def L2P_batch(node, pa):
     """
