@@ -23,9 +23,9 @@ _K1 = np.arange(1, MAX_P)
 # 一些const array initialization
 
 # Nlm (P2M要用的const array)
-Nlm = np.zeros((MAX_P + 1, MAX_P + 1)) 
+Nlm = np.zeros((2 * MAX_P + 1, 2 * MAX_P + 1)) 
 # Anm (M2M要用的const array)
-Anm = np.zeros((MAX_P + 1, 2 * MAX_P + 1)) 
+Anm = np.zeros((2 * MAX_P + 1, 2 * MAX_P + 1)) 
 
 class ParticleArray:
     """
@@ -94,18 +94,15 @@ class OctreeNode:
 
 def build_const_Array():
     # 建一些P2M, M2M要用的表 
-    for l in range(MAX_P + 1):
+    for l in range(2 * MAX_P + 1):
         for m in range(l + 1):
             Nlm[l, m] = np.sqrt(math.factorial(l - m) / math.factorial(l + m))
+            Anm[l, m] = (-1)**l / np.sqrt(math.factorial(l - m) * math.factorial(l + m))
 
-            AnmAns = (-1)**l / np.sqrt(math.factorial(l - m) * math.factorial(l + m))
-            Anm[l, MAX_P + m] = AnmAns
-            if m : Anm[l, MAX_P - m] = AnmAns
-
-def get_LegendreP(size, sintheta, costheta):
-
+def get_LegendreP(sintheta, costheta, Pscale):
     sintheta = np.atleast_1d(sintheta)
     costheta = np.atleast_1d(costheta)
+    size = len(sintheta)
     # 算P_mn(phi')
     # (1) P_(m-1)(m-1)       => P_mm     = -(2m - 1) * sin(theta') * P_(m-1)(m-1)(cos(theta'))
     # (2) P_mm               => P_m(m+1) =  (2m + 1) * cos(theta') * P_mm(cos(theta'))
@@ -113,16 +110,16 @@ def get_LegendreP(size, sintheta, costheta):
     #                                    -  (l + m - 1)/(l - m) * P_m_(l-2)(cos(theta'))
     # 從P_00 = 1 開始
 
-    Plm = np.zeros((MAX_P + 1 , MAX_P + 1, size))  # 只有一個particle, 所以P = P[MAX_P][MAX_P]
+    Plm = np.zeros((Pscale, Pscale, size))  
     Plm[0, 0, :] = 1.0
 
-    for m in range(0, MAX_P):
+    for m in range(0, Pscale - 1):
         # (1)
         Plm[m + 1, m + 1, :] = -(2*m + 1) * sintheta * Plm[m, m, :]
         # (2)
         Plm[m + 1, m, :]     =  (2*m + 1) * costheta * Plm[m, m, :]
     
-    for l in range(2, MAX_P + 1):
+    for l in range(2, Pscale):
         # (3)
         for m in range(l - 1):
             Plm[l, m, :] = (2*l - 1) / (l - m) * costheta * Plm[l-1, m, :] \
@@ -132,14 +129,14 @@ def get_LegendreP(size, sintheta, costheta):
 
     return Plm
 
-def get_SphHarmoY(size, Plm, exp_i_phi):
-    Plm = np.asarray(Plm).reshape(MAX_P + 1, MAX_P + 1, -1)
-    Ylm = np.zeros((MAX_P + 1, MAX_P + 1, size), dtype = complex)
-
+def get_SphHarmoY(Plm, exp_i_phi, Yscale):
     exp_i_phi = np.atleast_1d(exp_i_phi)
-    
+    size = len(exp_i_phi)
 
-    for l in range(MAX_P + 1):
+    Plm = np.asarray(Plm).reshape(Yscale, Yscale, -1)
+    Ylm = np.zeros((Yscale, Yscale, size), dtype = complex)
+    
+    for l in range(Yscale):
         exp_now = np.ones(size, dtype = complex)
         for m in range(l + 1):
             Ylm[l, m, :] = Nlm[l, m] * Plm[l, m, :] * exp_now
@@ -162,7 +159,7 @@ def get_inf(pos1, pos2):
     sintheta = np.sqrt(1 - costheta**2)
     exp_iphi = (ds[0] + 1j * ds[1]) / dxy           # exp(iphi) = cos(phi) + i * sin(phi)
 
-    return ds, rs, dxy, costheta, sintheta, exp_iphi
+    return np.squeeze(ds), np.squeeze(rs), np.squeeze(dxy), np.squeeze(costheta), np.squeeze(sintheta), np.squeeze(exp_iphi)
 
 # --- FMM 核心算子 (Operators) ---
 
@@ -183,18 +180,19 @@ def P2M(node, pa):
     ds, rs, dxy, costheta, sintheta, exp_iphi = get_inf(pa.pos[:, idx], node.center.reshape(3, 1)) # pos1, pos2 (ds = pos2 -> pos1(pos1 - pos2))
     
     # 算P_mn(phi')
-    Plm = get_LegendreP(N, sintheta, costheta) # size, sintheta, costheta
+    Plm = get_LegendreP(sintheta, costheta, MAX_P + 1) # sintheta, costheta, Pscale 
     
     # 算Ylm(theta',phi')
-    Ylm = get_SphHarmoY(size, exp_iphi) # size, expiphi 
+    Ylm = get_SphHarmoY(Plm, exp_iphi, MAX_P + 1) # size, expiphi 
     
     # 算Mlm
     Mlm = np.zeros((MAX_P + 1, 2 * MAX_P + 1), dtype = complex) # m 從 -l 到 l  
     for l in range(MAX_P + 1):
+        num_indep_of_m = mas * rs**l
         for m in range(l + 1):
             # -l, -l+1, ..., -1, 0, 1, 2 .... l
-            Mlm[l, MAX_P + m] = np.sum(mas[:] * rs[:]**l * np.conj(Ylm[l, m, :])) # Y_l(-m) = Y_lm*
-            if m: Mlm[l, MAX_P - m] = np.sum(mas[:] * rs[:]**l * Ylm[l, m, :])
+            Mlm[l, MAX_P + m] = np.sum(num_indep_of_m * np.conj(Ylm[l, m, :])) # Y_l(-m) = Y_lm*
+            if m: Mlm[l, MAX_P - m] = np.sum(num_indep_of_m * Ylm[l, m, :])
 
     node.multipole_coeffs = Mlm
 
@@ -208,10 +206,10 @@ def M2M(parent, child):
     ds, rs, dxy, costheta, sintheta, exp_iphi = get_inf(child.center, parent.center) # pos1, pos2 (ds = pos2 -> pos1(pos1 - pos2))
 
     # 算Plm
-    Plm = get_LegendreP(1, sintheta, costheta)
+    Plm = get_LegendreP(sintheta, costheta, MAX_P + 1)
 
     # 算Ylm(theta',phi')
-    Ylm = get_SphHarmoY(1, Plm, exp_iphi) # size, Plm, exp_iphi
+    Ylm = get_SphHarmoY(Plm, exp_iphi, MAX_P + 1) # Plm, exp_iphi, Ysclae
 
     # 算M'lm 
     Olm = child.multipole_coeffs
@@ -233,33 +231,46 @@ def M2M(parent, child):
                     else: flag = Ylm[n, -m]
 
                     add_num += (Olm[j - n, MAX_P + k - m] * (1j)**(abs(k)-abs(m)-abs(k-m))  \
-                                       *  Anm[n, MAX_P + m] * Anm[j - n, MAX_P + k - m] * rs**n * (flag))
+                                       *  Anm[n, abs(m)] * Anm[j - n, abs(k - m)] * rs**n * (flag))
                 
-            Mjk[j, MAX_P + k] += add_num / Anm[j, MAX_P + k]
+            Mjk[j, MAX_P + k] += add_num / Anm[j, abs(k)]
     parent.multipole_coeffs = Mjk
 
 def M2L(target, source):
+    # 丟進來兩個node
     """
     Multipole-to-Local (M2L):
     將遠方源節點的多極展開轉換為目標節點的局部展開。
     這是 FMM 最關鍵的一步，將「遠方群體」的影響轉化為「本地場」的近似。
     """
-    # 把在在圓心z0附近的的東西在z = 0 展開 => d = z0 - z 
-    d = source.center - target.center
-    inv_d = 1.0 / d
-    a = source.multipole_coeffs
+    # pos1, pos2 (ds = pos2 -> pos1(pos1 - pos2))
+    ds, rs, dxy, costheta, sintheta, exp_iphi = get_inf(source.center, target.center)
     
-    # 處理 0 階項 (對數項)
-    target.local_coeffs[0] += a[0] * cmath.log(-d)
-    
-    for k in range(1, MAX_P):
-        target.local_coeffs[0] += a[k] * (-1)**(k) / d**k
-    
-    # 處理高階項
-    for l in range(1, MAX_P):
-        target.local_coeffs[l] += -a[0] / (l * d**l)
-        for k in range(1, MAX_P):
-            target.local_coeffs[l] += a[k] * (-1)**(k) * BINOM[l+k-1, k-1] / d**(l+k)
+    Plm = get_LegendreP(sintheta, costheta, 2 * MAX_P + 1)
+    Ylm = get_SphHarmoY(Plm, exp_iphi, 2 * MAX_P + 1)
+
+    Onm = source.multipole_coeffs
+    Ljk = np.zeros((MAX_P + 1, 2 * MAX_P + 1), dtype = complex)
+
+    for j in range(MAX_P + 1):
+        for k in range(-j, j + 1):
+            add_num = 0.0 + 0.0j
+
+            for n in range(MAX_P + 1):
+                for m in range(-n, n + 1):
+                    # j - n  > 0 
+                    # 但是 k - m 有些 < 0 
+                    # 我們上面的P2M 有定義 Olm(# -l, -l+1, ..., -1, 0, 1, 2 .... l)
+
+                    # Y +m -m 定義不同
+                    if(m - k < 0): flag = np.conj(Ylm[j + n, -m + k]) # m > 0 => -m < 0 Yn(-m) = *Ynm
+                    else: flag = Ylm[j + n, m - k]
+
+                    add_num += Onm[n, MAX_P + m] * (1j)**(abs(k - m) - abs(k) - abs(m)) * Anm[n, abs(m)] \
+                             * Anm[j , abs(k)] * flag / ((-1)**n * rs**(j + n + 1) * Anm[j + n, abs(m - k)]) # Anm 會跑到2P
+
+            Ljk[j, MAX_P + k] += add_num
+    target.local_coeffs = Ljk
 
 def L2L(parent, child):
     """
