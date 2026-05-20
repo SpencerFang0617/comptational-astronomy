@@ -245,12 +245,13 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
 static void direct_sum(const Particle *particles, int n,
                        double *pot, double *fx, double *fy)
 {
+    #pragma omp target teams distribute parallel for \
+        map(to: particles[0:n]) \
+        map(from: pot[0:n], fx[0:n], fy[0:n])
     for (int i = 0; i < n; i++) {
         pot[i] = 0.0;
         fx[i]  = 0.0;
         fy[i]  = 0.0;
-    }
-    for (int i = 0; i < n; i++) {
         for (int j = i + 1; j < n; j++) {
             double dx = particles[i].x - particles[j].x;
             double dy = particles[i].y - particles[j].y;
@@ -261,14 +262,27 @@ static void direct_sum(const Particle *particles, int n,
             double inv_r2 = 1.0 / r2;
 
             pot[i] += G_CONST * particles[j].mass * ln_r2;
-            pot[j] += G_CONST * particles[i].mass * ln_r2;
 
             double fxij = dx * inv_r2;
             double fyij = dy * inv_r2;
             fx[i] -= G_CONST * particles[j].mass * fxij;
             fy[i] -= G_CONST * particles[j].mass * fyij;
-            fx[j] += G_CONST * particles[i].mass * fxij;
-            fy[j] += G_CONST * particles[i].mass * fyij;
+        }
+        for (int j = i -1; j >= 0; j--) {
+            double dx = particles[i].x - particles[j].x;
+            double dy = particles[i].y - particles[j].y;
+            double r2 = dx * dx + dy * dy;
+            if (r2 < 1e-15) r2 = 1e-15;
+
+            double ln_r2  = 0.5 * log(r2);
+            double inv_r2 = 1.0 / r2;
+
+            pot[i] += G_CONST * particles[j].mass * ln_r2;
+
+            double fxij = dx * inv_r2;
+            double fyij = dy * inv_r2;
+            fx[i] -= G_CONST * particles[j].mass * fxij;
+            fy[i] -= G_CONST * particles[j].mass * fyij;
         }
     }
 }
@@ -329,9 +343,9 @@ int main(int argc, char *argv[])
     srand(42);
     Particle *particles = malloc(N * sizeof(Particle));
     for (int i = 0; i < N; i++) {
-        particles[i].x         = (double)rand() / RAND_MAX * 10.0;
-        particles[i].y         = (double)rand() / RAND_MAX * 10.0;
-        particles[i].mass      = (double)rand() / RAND_MAX + 1.0;
+        particles[i].x         = (double)rand() / RAND_MAX * 100.0;
+        particles[i].y         = (double)rand() / RAND_MAX * 100.0;
+        particles[i].mass      = (double)rand() / RAND_MAX + 0.5;
         particles[i].potential = 0.0;
         particles[i].fx        = 0.0;
         particles[i].fy        = 0.0;
@@ -359,9 +373,9 @@ int main(int argc, char *argv[])
         fmm_fy[i]  = particles[i].fy;
     }
 
-    write_results_by_cores(particles, N);
-    printf("結果已寫入 result/ 資料夾（共 %d 個核心分區）\n",
-           omp_get_max_threads());
+    // write_results_by_cores(particles, N);
+    // printf("結果已寫入 result/ 資料夾（共 %d 個核心分區）\n",
+    //        omp_get_max_threads());
 
     /* 只在 N 不大時跑 O(N^2) direct sum 作為 reference */
     if (N <= 50000) {
