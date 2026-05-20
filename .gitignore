@@ -30,3 +30,6 @@ $RECYCLE.BIN/
 *.zip
 *.rar
 *.gz
+
+# --- 其他不必要的檔案 ---
+*.txt

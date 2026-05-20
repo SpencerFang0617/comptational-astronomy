@@ -1,6 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
 
 #include "fmm.h"
 #include "quadtree.h"
@@ -33,7 +39,7 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
 
     //開始多線程計算P2M
     
-    //#pragma omp parallel for
+    #pragma omp parallel for
     for (int i = 0; i < tree->num_leaves; i++) {
         int leaf_id = tree->leaf_indices[i];
         P2M(tree, leaf_id, multipole);
@@ -64,7 +70,7 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
 
     /*從最深層開始，先判斷自己的M2M_result[i]是否為0，若為零則檢查子節點的M2M_result是否為0，若不為零則計算M2M，並將結果存入M2M_result[i]，如過M2M_result[i]不為零則跳過計算*/
     for (int lv = tree->max_level - 1; lv >= 0; lv--) {
-        //#pragma omp parallel for
+        #pragma omp parallel for
         for (int idx = 0; idx < count_arr[lv]; idx++) {
             int parent_id = base_arr[lv] + idx;
             if (tree->node_start[parent_id] > tree->node_end[parent_id])
@@ -89,19 +95,19 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
         }
     }
 
-    /*for debug*/
-    #ifdef DEBUG
-    FILE *fp_2 = fopen("multipole_log_2.txt", "a");
-    for (int i = 0; i < tree->total_nodes; i++) {
-        if(has_multi[i]) {
-            for (int j = 0; j < MAX_P; j++) {
-                fprintf(fp_2, "%f ", creal(multipole[i * MAX_P + j]));
-            }
-            fprintf(fp_2, "\n");
-        }
-    }
-    fclose(fp_2);
-    #endif
+    // /*for debug*/
+    // #ifdef DEBUG
+    // FILE *fp_2 = fopen("multipole_log_2.txt", "a");
+    // for (int i = 0; i < tree->total_nodes; i++) {
+    //     if(has_multi[i]) {
+    //         for (int j = 0; j < MAX_P; j++) {
+    //             fprintf(fp_2, "%f ", creal(multipole[i * MAX_P + j]));
+    //         }
+    //         fprintf(fp_2, "\n");
+    //     }
+    // }
+    // fclose(fp_2);
+    // #endif
 
     /* ---- Downward pass: M2L + L2L，由頂到底 ---- */
     double complex *local_exp = calloc(tree->total_nodes * MAX_P, sizeof(double complex));
@@ -113,11 +119,11 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
 
 
     //FILE *fp_L2L = fopen("L2L_log.txt", "a");
-    FILE *fp_M2L = fopen("M2L_log.txt", "a");
+    //FILE *fp_M2L = fopen("M2L_log.txt", "a");
     for (int lv = 1; lv <= tree->max_level; lv++) {
         int grid_lv      = 1 << lv;        // 2^lv
         int grid_parent  = 1 << (lv - 1);  // 2^(lv-1)
-        //#pragma omp parallel for
+        #pragma omp parallel for
         for (int idx = 0; idx < count_arr[lv]; idx++) {
             int node_id = base_arr[lv] + idx;
             if (tree->node_start[node_id] > tree->node_end[node_id])
@@ -161,36 +167,39 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
 
                         /* 是 interaction list 成員 → 做 M2L */
                         M2L(tree, node_id,src_id, multipole, local_exp, binom);
-                        for (int j = 0; j < MAX_P; j++) {
-                            fprintf(fp_M2L, "%f ", creal(local_exp[node_id * MAX_P + j]));
-                        }
-                        fprintf(fp_M2L, "\n");
                     }
                 }
             }
         }
     }
     //fclose(fp_L2L);
-    fclose(fp_M2L);
+    //fclose(fp_M2L);
 
-    /*for debug*/
-    #ifdef DEBUG
-    FILE *fp_3 = fopen("local_exp.txt", "a");
-    for (int i = 0; i < tree->total_nodes; i++) {
-        for (int j = 0; j < MAX_P; j++) {
-            fprintf(fp_3, "%f ", creal(local_exp[i * MAX_P + j]));
-            }
-            fprintf(fp_3, "\n");
-        }
-    fclose(fp_3);
-    #endif
+    // /*for debug*/
+    // #ifdef DEBUG
+    // FILE *fp_3 = fopen("local_exp.txt", "a");
+    // for (int i = 0; i < tree->total_nodes; i++) {
+    //     for (int j = 0; j < MAX_P; j++) {
+    //         fprintf(fp_3, "%f ", creal(local_exp[i * MAX_P + j]));
+    //         }
+    //         fprintf(fp_3, "\n");
+    //     }
+    // fclose(fp_3);
+    // #endif
 
     /* ---- Final evaluation: leaves only ---- */
-    //#pragma omp parallel for
+    #pragma omp parallel for
     for (int i = 0; i < tree->num_leaves; i++)
         L2P(tree, tree->leaf_indices[i], local_exp);
 
     /*P2P evaluation for non-leaves*/
+    /*
+     * 平行化策略：每個 thread 只「寫」自己的 leaf_id 粒子，不再使用對稱寫法。
+     * 因此呼叫 P2P 時 is_symmetric = false，並且不再以 nb_id > leaf_id 過濾，
+     * 改成每個 leaf 都掃完全部 8 個鄰居（每對近場交互被算兩次，但不需 atomic）。
+     * P2P_S 只寫自己 leaf 內的粒子，本身就 thread-safe。
+     */
+    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < tree->num_leaves; i++) {
         int leaf_id = tree->leaf_indices[i];
         int lv  = find_level(leaf_id, base_arr, tree->max_level);
@@ -211,9 +220,7 @@ static void fmm_solve(Particle *particles, int n, int MAX_LEVEL, int MAX_PER_LEA
                 int nb_id  = base_arr[lv] + nb_idx;
                 if (tree->node_start[nb_id] > tree->node_end[nb_id])
                     continue;
-                /* 避免重複計算：只處理 nb_id > leaf_id 的一半 */
-                if (nb_id <= leaf_id) continue;
-                P2P(tree, leaf_id, nb_id, true);
+                P2P(tree, leaf_id, nb_id, false);
             }
         }
     }
@@ -266,6 +273,50 @@ static void direct_sum(const Particle *particles, int n,
     }
 }
 
+/* 依 OpenMP 核心數將粒子結果分區寫入 result/起始~結束.txt */
+static void write_results_by_cores(const Particle *particles, int n)
+{
+#ifdef _WIN32
+    _mkdir("result");
+#else
+    mkdir("result", 0755);
+#endif
+
+    int num_threads = omp_get_max_threads();
+    int chunk_size  = (n + num_threads - 1) / num_threads;
+
+    #pragma omp parallel for schedule(static)
+    for (int t = 0; t < num_threads; t++) {
+        int start = t * chunk_size;
+        if (start >= n)
+            continue;
+        int end = start + chunk_size - 1;
+        if (end >= n)
+            end = n - 1;
+
+        char filename[64];
+        snprintf(filename, sizeof(filename), "result/%d~%d.txt", start, end);
+
+        FILE *fp = fopen(filename, "w");
+        if (!fp) {
+            fprintf(stderr, "無法建立檔案：%s\n", filename);
+            continue;
+        }
+
+        fprintf(fp, "粒子編號 x y 位能 fx fy\n");
+        for (int i = start; i <= end; i++) {
+            fprintf(fp, "%d %.6e %.6e %.6e %.6e %.6e\n",
+                    i,
+                    particles[i].x,
+                    particles[i].y,
+                    particles[i].potential,
+                    particles[i].fx,
+                    particles[i].fy);
+        }
+        fclose(fp);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     int N = 1000;
@@ -307,6 +358,10 @@ int main(int argc, char *argv[])
         fmm_fx[i]  = particles[i].fx;
         fmm_fy[i]  = particles[i].fy;
     }
+
+    write_results_by_cores(particles, N);
+    printf("結果已寫入 result/ 資料夾（共 %d 個核心分區）\n",
+           omp_get_max_threads());
 
     /* 只在 N 不大時跑 O(N^2) direct sum 作為 reference */
     if (N <= 50000) {

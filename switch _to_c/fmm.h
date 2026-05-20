@@ -13,7 +13,7 @@
 #define FMM_ORDER         12
 #define MAX_P             (FMM_ORDER + 1)
 #define MAX_CHILDREN      4
-#define FMM_MAX_LEVEL     10      /* 樹深度的硬上限 */
+#define FMM_MAX_LEVEL     20      /* 樹深度的硬上限 */
 #define FMM_MAX_PER_LEAF  64      /* 葉節點粒子數的硬上限 */
 #define G_CONST           1.0
 #define DEBUG
