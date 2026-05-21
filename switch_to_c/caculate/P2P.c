@@ -35,17 +35,19 @@ void P2P(const HilbertTree *tree, int node_a_id, int node_b_id, bool is_symmetri
             if (r2 < 1e-15) r2 = 1e-15;
 
             double mj    = tree->sort_mass[j];
-            double pot   = 0.5 * log(r2);
+            double pot   = log(r2);
             double invr2 = 1.0 / r2;
             double fxij  = dx * invr2;
             double fyij  = dy * invr2;
 
-            pi_acc  += G_CONST * mj * pot;
+            pi_acc  += G_CONST * mj * pot*0.5;
+            /* fxij = (xi - xj) / r^2, fyij = (yi - yj) / r^2
+               因為力 F = -G m (r_i - r_j) / r^2 */
             fxi_acc -= G_CONST * mj * fxij;
             fyi_acc -= G_CONST * mj * fyij;
 
             if (is_symmetric) {
-                tree->sort_potential[j] += G_CONST * mi * pot;
+                tree->sort_potential[j] += G_CONST * mi * pot*0.5;
                 tree->sort_fx[j]        += G_CONST * mi * fxij;
                 tree->sort_fy[j]        += G_CONST * mi * fyij;
             }

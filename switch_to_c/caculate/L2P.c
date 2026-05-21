@@ -20,13 +20,13 @@ void L2P(const HilbertTree *tree, int leaf_id, double complex *local_exp){
         /* 計算受力 (勢能的負梯度): F = -conj( dPhi/dz ) */
         double complex force = 0;
         dz_pow = 1;
-        for (int k = 0; k < MAX_P; k++){
+        for (int k = 1; k < MAX_P; k++){
             force += (double complex)k * local_exp[leaf_id * MAX_P + k] * dz_pow;
             dz_pow *= dz;
         }
+        /* 因為 F = -conj(dPhi/dz)，所以 Fx = -Re(dPhi/dz)，Fy = +Im(dPhi/dz) */
         tree->sort_fx[i] -= G_CONST * creal(force);
         tree->sort_fy[i] += G_CONST * cimag(force);
-
 
     }
 }
