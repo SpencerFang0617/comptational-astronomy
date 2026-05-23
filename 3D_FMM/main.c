@@ -36,8 +36,8 @@ typedef struct Box {
     struct Box* parent;     
     struct Box* children[8];
     
-    Complex multipole[P_TOTAL]; 
-    Complex local[P_TOTAL];     
+    Complex multipole[P_TERMS+1][2*P_TERMS+1]; 
+    Complex local[P_TERMS+1][2*P_TERMS+1];     
 } Box;
 
 // --- 函數原型宣告 ---
@@ -64,7 +64,7 @@ Complex c_mul_real(Complex a, double r) {
 }
 
 Complex c_mul_c(Complex a, Complex b){
-    return(make_complex(a.real * b.real - a.imag - b.imag, a.imag * b.real + a.real * b.imag));
+    return(make_complex(a.real * b.real - a.imag * b.imag, a.imag * b.real + a.real * b.imag));
 }
 
 Complex c_conj(Complex a){
@@ -199,10 +199,11 @@ void get_sph_num(double x1, double x2, double y1, double y2, double z1, double z
     (*pds)[2] = z1 - z2;
     double dxy = pow((*pds)[0], 2) + pow((*pds)[1], 2);
     *pr = dxy + pow((*pds)[2], 2);
+    *pr = sqrt(*pr);
     *pcostheta = (*pds)[2] / *pr;
-    *psintheta = dxy / *pr;
-    pe_iphi->real = *pds[0] / pow(dxy, 2);
-    pe_iphi->imag = *pds[1] / pow(dxy, 2);
+    *psintheta = sqrt(dxy) / *pr;
+    pe_iphi->real = (*pds)[0] / sqrt(dxy);
+    pe_iphi->imag = (*pds)[1] / sqrt(dxy);
     return;
 }
 
@@ -242,33 +243,35 @@ void get_Y(int Yscale, Complex e_iphi, double (*pPlm)[Yscale], Complex (*pYlm)[Y
 void p2m(Box* box, Particle* particles, double (*pNlm)[2*P_TERMS+1]) {
     if (!box->is_leaf) return;
     Complex Mlm[P_TERMS+1][2*P_TERMS+1];
-    for(int i=0;i<=P_TERMS;i++) for(int j=0;j<=P_TERMS;j++) Mlm[i][j]=0;
+    for(int i=0;i<=P_TERMS;i++) for(int j=0;j<=P_TERMS;j++) Mlm[i][j]=make_complex(0, 0);
 
     for (int i = 0; i < box->num_particles; i++){
         Particle* p = &particles[box->particle_indices[i]];
         double ds[3], r, sintheta, costheta, Plm[P_TERMS+1][P_TERMS+1];
         Complex e_iphi, Ylm[P_TERMS+1][P_TERMS+1];
 
-        get_r_related(p->x, box->cx, p->y, box->cy, p->z, box->cz, 
+        get_sph_num(p->x, box->cx, p->y, box->cy, p->z, box->cz, 
                       ds, &r, &sintheta, &costheta, &e_iphi);
         get_P(P_TERMS + 1, sintheta, costheta, Plm);
         get_Y(P_TERMS + 1, e_iphi, Plm, Ylm, pNlm);
         double r_now = 1;
+        // rnow => r^l
         for(int l=0;l<P_TERMS+1;l++){
-            double coeff_indep_m = particles->charge ** r_now;
+            double coeff_indep_m = p->charge * pow(r_now, l);
             for(int m=-l;m<=l;m++){
-                if(m>=0) Mlm[l][P_TERMS+m] += r_now * Ylm[l][m];
-                else Mlm[l][P_TERMS+m] += r_now * make_complex(Ylm[l][-m].real, -Ylm[l][-m].imag); // conj of Y
+                Complex flag;
+                if(m>=0) flag = Ylm[l][m];
+                else flag = c_conj(Ylm[l][-m]);
+                box->multipole[l][P_TERMS+m] =c_add(box->multipole[l][P_TERMS+m], coeff_indep_m * flag);
             }
             r_now *= r;
         }
-        box->multipole = Mlm;
     }
 }
 
 void m2m(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
     memset(parent->multipole, 0, sizeof(Complex) * P_TOTAL);
-    Complex i_power[4] = {make_complex(0, 1), make_complex(-1, 0), make_complex(0, -1), make_complex(1, 0)};
+    Complex i_power[4] = {make_complex(1, 0), make_complex(0, 1), make_complex(-1, 0), make_complex(0, -1)};
     for(int i=0;i<8;i++){
         double ds[3], r, sintheta, costheta, Plm[P_TERMS+1][P_TERMS+1];
         Complex e_iphi, Ylm[P_TERMS+1][P_TERMS+1];
@@ -286,7 +289,7 @@ void m2m(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) 
                     for(int m=-n;m<=n;m++){
                         if(abs(k-m) > j-n) continue;
                         Complex flag;
-                        if(m>=0) flag = make_complex(Ylm[n][m].real, -Ylm[n][m].imag);
+                        if(m>=0) flag = c_conj(Ylm[n][m]);
                         else flag = Ylm[n][-m];
                         
 
@@ -295,12 +298,12 @@ void m2m(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) 
                                         c_mul_c(
                                             c_mul_c(Olm[j-n][P_TERMS+k-m], i_power[(((abs(k)-abs(m)-abs(k-m))%4)+4)%4]),
                                             flag),
-                                        (*pAlm)[n][abs(m)] * (*pAlm)[j-n][abs(k-m)] * r_now));
+                                        pAlm[n][abs(m)] * pAlm[j-n][abs(k-m)] * r_now));
                     }
                     r_now *= r;
                 }
                 parent->multipole[j][P_TERMS+k] = c_add(parent->multipole[j][P_TERMS+k],
-                                                        c_mul_real(add_num, 1.0 / (*pAlm)[j][abs(k)]));
+                                                        c_mul_real(add_num, 1.0 / pAlm[j][abs(k)]));
             }
         }
     }
@@ -310,7 +313,7 @@ void m2m(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) 
 void m2l(Box* target, Box* source, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
     double ds[3], r, sintheta, costheta, Plm[2*P_TERMS+1][2*P_TERMS+1];
     Complex e_iphi, Ylm[2*P_TERMS+1][2*P_TERMS+1];
-    Complex i_power[4] = {make_complex(0, 1), make_complex(-1, 0), make_complex(0, -1), make_complex(1, 0)};
+    Complex i_power[4] = {make_complex(1, 0), make_complex(0, 1), make_complex(-1, 0), make_complex(0, -1)};
     get_sph_num(source->cx, target->cx, source->cy, target->cy, source->cz, target->cz, ds, &r, &sintheta, &costheta, &e_iphi);
     get_P(2*P_TERMS+1, sintheta, costheta, Plm);
     get_Y(2*P_TERMS+1, e_iphi, Plm, Ylm, pNlm);
@@ -344,16 +347,17 @@ void m2l(Box* target, Box* source, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2
 
 void l2l(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
     if (parent->is_leaf) return;
+    Complex i_power[4] = {make_complex(1, 0), make_complex(0, 1), make_complex(-1, 0), make_complex(0, -1)};
     for (int i = 0; i < 8; i++) {
         Box *child = parent->children[i];
         if(!child) continue;
-        double ds[3], r, sintheta, costheta, Plm[P_TERMS+1][2*P_TERMS+1];
-        Complex e_iphi, Ylm[P_TERMS+1][2*P_TERMS+1];
+        double ds[3], r, sintheta, costheta, Plm[2*P_TERMS+1][2*P_TERMS+1];
+        Complex e_iphi, Ylm[2*P_TERMS+1][2*P_TERMS+1];
         get_sph_num(child->cx, parent->cx, child->cy, parent->cy, child->cz, parent->cz, ds, &r, &sintheta, &costheta, &e_iphi);
         get_P(2*P_TERMS+1, sintheta, costheta, Plm);
         get_Y(2*P_TERMS+1, e_iphi, Plm, Ylm, pNlm);
 
-        Complex (*Olm)[P_TERMS+1][2*P_TERMS+1] = parent->local;
+        Complex (*Olm)[2*P_TERMS+1] = parent->local;
         for(int j=0;j<=P_TERMS;j++){
             for(int k=-j;k<=j;k++){
                 Complex add_num = make_complex(0, 0);
@@ -362,7 +366,7 @@ void l2l(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) 
                     for(int m=-n;m<=n;m++){
                         Complex flag;
                         if(m-k>0) flag = Ylm[n-j][m-k];
-                        else flag = make_complex(Ylm[n-j][k-m].real, -Ylm[n-j][k-m].imag);
+                        else flag = c_conj(Ylm[n-j][k-m]);
                         add_num = c_add(add_num,
                             c_mul_real(
                                 c_mul_c(
