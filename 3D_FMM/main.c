@@ -286,12 +286,17 @@ void m2m(Box* parent, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) 
                         else flag = Ylm[n][-m];
                         
 
-                        add_num += Olm[j-n][P_TERMS+k-m] * i_power[(((abs(k)-abs(m)-abs(k-m))%4)+4)%4]
-                                 * (*pAlm)[n][abs(m)] * (*pAlm)[j-n][abs(k-m)] * r_now * flag; 
+                        add_num = c_add(add_num,
+                                    c_mul_real(
+                                        c_mul_c(
+                                            c_mul_c(Olm[j-n][P_TERMS+k-m], i_power[(((abs(k)-abs(m)-abs(k-m))%4)+4)%4]),
+                                            flag),
+                                        (*pAlm)[n][abs(m)] * (*pAlm)[j-n][abs(k-m)] * r_now));
                     }
                     r_now *= r;
                 }
-                parent->multipole[j][P_TERMS+k] += add_num / (*pAlm)[j][abs(k)];
+                parent->multipole[j][P_TERMS+k] = c_add(parent->multipole[j][P_TERMS+k],
+                                                        c_mul_real(add_num, 1.0 / (*pAlm)[j][abs(k)]));
             }
         }
     }
@@ -317,8 +322,12 @@ void m2l(Box* target, Box* source, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2
                     if(m-k<0) flag = make_complex(Ylm[j+n][-m+k].real, -Ylm[j+n][-m+k].imag);
                     else flag = Ylm[j+n][m-k];
 
-                    add_num = c_add(add_num, c_mul_real(c_mul_c(c_mul_c(Olm[n][P_TERMS+m], i_power[((abs(k-m)-abs(k)-abs(m))%4+4)%4]), flag), 
-                                             pAlm[n][abs(m)] * pAlm[j][abs(k)]/ (m1_now * rnow * pAlm[j+n][abs(m-k)])));
+                    add_num = c_add(add_num, 
+                                c_mul_real(
+                                    c_mul_c(
+                                        c_mul_c(Olm[n][P_TERMS+m], i_power[((abs(k-m)-abs(k)-abs(m))%4+4)%4]), 
+                                                flag), 
+                                    pAlm[n][abs(m)] * pAlm[j][abs(k)]/ (m1_now * rnow * pAlm[j+n][abs(m-k)])));
                 }
                 m1_now *= -1;
                 rnow *= r;
