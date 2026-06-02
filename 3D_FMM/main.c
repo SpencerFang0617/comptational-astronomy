@@ -8,7 +8,7 @@
 // 1. 參數與結構定義
 // =====================================================================
 
-#define P_TERMS 4  
+#define P_TERMS 4
 #define P_TOTAL ((P_TERMS + 1) * (P_TERMS + 2) / 2)  
 #define MAX_PARTICLES 10   // finest box 粒子數上限
 
@@ -49,6 +49,7 @@ Box* find_box(Box* current, double x, double y, double z, int target_level);
 int is_neighbor(Box* a, Box* b);
 Box* get_neighbor(Box* box, int neighbor_index, Box* root);
 
+// Do not touch
 // --- 複數運算 ---
 Complex make_complex(double r, double i) {
     Complex c = {r, i};
@@ -235,10 +236,10 @@ void get_Y(int Yscale, Complex e_iphi, double (*pPlm)[Yscale], Complex (*pYlm)[Y
     return;
 }
 
+// Do not touch
 // =====================================================================
 // 3. FMM 算子 (Operators)
 // =====================================================================
-// (這部分物理公式維持你修正後的正確版)
 
 void p2m(Box* box, Particle* particles, double (*pNlm)[2*P_TERMS+1]) {
     if (!box->is_leaf) return;
@@ -260,7 +261,7 @@ void p2m(Box* box, Particle* particles, double (*pNlm)[2*P_TERMS+1]) {
                 Complex flag;
                 if(m>=0) flag = c_conj(Ylm[l][m]);
                 else flag = Ylm[l][m];
-                box->multipole[l][P_TERMS+m] =c_add(box->multipole[l][P_TERMS+m], coeff_indep_m * flag);
+                box->multipole[l][P_TERMS+m] =c_add(box->multipole[l][P_TERMS+m],c_mul_real(flag, coeff_indep_m));
             }
             r_now *= r;
         }
@@ -411,18 +412,18 @@ void l2p(Box* box, Particle* particles, double (*pAlm)[2*P_TERMS+1], double (*pN
 // 運算執行
 // =====================================================================
 
-void upward_pass(Box* box, Particle* particles) {
+void upward_pass(Box* box, Particle* particles, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
     if (box->is_leaf) {
-        p2m(box, particles);
+        p2m(box, particles, pNlm);
     } else {
         for (int i = 0; i < 8; i++) {
-            if (box->children[i]) upward_pass(box->children[i], particles);
+            if (box->children[i]) upward_pass(box->children[i], particles, pAlm, pNlm);
         }
-        m2m(box);
+        m2m(box, pAlm, pNlm);
     }
 }
 
-void compute_m2l(Box* target_box, Box* root) {
+void compute_m2l(Box* target_box, Box* root, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
     Box* parent = target_box->parent;
     if (!parent) return;
 
@@ -434,19 +435,19 @@ void compute_m2l(Box* target_box, Box* root) {
         for (int j = 0; j < 8; j++) {
             Box* candidate = p_neighbor->children[j];
             if (candidate && !is_neighbor(target_box, candidate)) {
-                m2l(target_box, candidate);
+                m2l(target_box, candidate, pAlm, pNlm);
             }
         }
     }
 }
 
-void downward_pass(Box* box, Box* root) {
-    compute_m2l(box, root);
-    l2l(box); 
+void downward_pass(Box* box, Box* root, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
+    compute_m2l(box, root, pAlm, pNlm);
+    l2l(box, pAlm, pNlm); 
     
     if (!box->is_leaf) {
         for (int i = 0; i < 8; i++) {
-            if (box->children[i]) downward_pass(box->children[i], root);
+            if (box->children[i]) downward_pass(box->children[i], root, pAlm, pNlm);
         }
     }
 }
@@ -474,9 +475,9 @@ void compute_near_field_uniform(Box* target_leaf, Box* neighbor_leaf, Particle* 
     }
 }
 
-void evaluate(Box* box, Box* root, Particle* particles) {
+void evaluate(Box* box, Box* root, Particle* particles, double (*pAlm)[2*P_TERMS+1], double (*pNlm)[2*P_TERMS+1]) {
     if (box->is_leaf) {
-        l2p(box, particles); 
+        l2p(box, particles, pAlm, pNlm); 
 
         // (a) 盒內粒子對（自身 vs 自身）
         for (int i = 0; i < box->num_particles; i++) {
@@ -502,7 +503,7 @@ void evaluate(Box* box, Box* root, Particle* particles) {
         }
     } else {
         for (int i = 0; i < 8; i++) {
-            if (box->children[i]) evaluate(box->children[i], root, particles);
+            if (box->children[i]) evaluate(box->children[i], root, particles, pAlm, pNlm);
         }
     }
 }
@@ -541,12 +542,26 @@ int main() {
     upward_pass(root, particles, &Alm, &Nlm);
     downward_pass(root, root, &Alm, &Nlm);
     evaluate(root, root, particles, &Alm, &Nlm);
-
+    double total_potential_di = 0;
+    double total_potential_fmm = 0;
     double direct_pot = 0;
-    for (int i = 1; i < N; i++) {
-        double r = sqrt(pow(particles[0].x-particles[i].x,2)+pow(particles[0].y-particles[i].y,2)+pow(particles[0].z-particles[i].z,2));
-        if (r > 1e-10) direct_pot += particles[i].charge / r;
+    double error = 0.;
+    for (int i = 0; i < N; i++) {
+        direct_pot = 0;
+        for (int j = 0; j < N; j++) {
+            if (i != j)
+            {
+            double r = sqrt(pow(particles[i].x-particles[j].x,2)+pow(particles[i].y-particles[j].y,2)+pow(particles[i].z-particles[j].z,2));
+            if (r > 1e-10) direct_pot += particles[i].charge / r;
+            }
+        }
+        total_potential_fmm += fabs(particles[i].potential);
+        total_potential_di += fabs(direct_pot);
     }
+    error = fabs(total_potential_fmm - total_potential_di) / fabs(total_potential_di);
+    printf("Error of the Energy: %e\n", error);
+    printf("Total potential by direct summation: %e\n", total_potential_di);
+    printf("Total potential by FMM: %e\n", total_potential_fmm);
     free_tree(root);
     free(particles);
     return 0;
