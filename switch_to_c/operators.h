@@ -3,6 +3,8 @@
 
 #include "fmm.h"
 
+/* 告知編譯器以下所有函式都要產生GPU 執行碼*/
+#pragma omp declare target
 /*
  * 預計算二項式係數表 C(n, k)，大小 [2*MAX_P][2*MAX_P]。
  * M2M、M2L、L2L 運算會用到。使用 Pascal's rule 迭代填表。
@@ -64,5 +66,7 @@ void L2P(const HilbertTree *tree, int leaf_id, double complex *local_exp);
  */
 void P2P_S(const HilbertTree *tree, int node_id);
 void P2P(const HilbertTree *tree, int node_a_id, int node_b_id, bool is_symmetric);
+
+#pragma omp end declare target
 
 #endif

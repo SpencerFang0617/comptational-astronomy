@@ -34,7 +34,13 @@ ifeq ($(COMPILER),nvc)
     OFFLOAD_LDFLAGS += -gpu=managed
   endif
 else ifeq ($(COMPILER),gcc)
-  CC      := gcc
+  # 偵測是否在 Mac (Darwin) 環境
+  UNAME_S := $(shell uname -s)
+  ifeq ($(UNAME_S),Darwin)
+    CC    := /opt/homebrew/bin/gcc-15
+  else
+    CC    := gcc
+  endif
   CFLAGS  := -std=c11 -Wall -Wextra -O2 -fopenmp -I.
   LDFLAGS := -fopenmp -lm
   OFFLOAD_TARGET  ?= nvptx64-nvidia-cuda

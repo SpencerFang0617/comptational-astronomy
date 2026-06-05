@@ -128,6 +128,7 @@ void hilbert_tree_free(HilbertTree *tree);
  * @param y 轉換後的y座標
  * @return 無
  */
+#pragma omp declare target
 void hilbert_d2xy(int n, uint64_t d, int *x, int *y);
 /**
  * @brief 將(x,y)座標轉換為Hilbert index
@@ -137,4 +138,5 @@ void hilbert_d2xy(int n, uint64_t d, int *x, int *y);
  * @return Hilbert index
  */
 uint64_t hilbert_xy2d(int n, int x, int y);
+#pragma omp end declare target
 #endif
